@@ -2,68 +2,65 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from video_swin_transformer import SwinTransformer3D
 from transformers import AutoConfig, BertModel, AutoModelForSequenceClassification
-
+from collections import OrderedDict
+from .video_swin_transformer import SwinTransformer3D
+from .clap import PretrainedCLAP
+from .decision_net import DecisionNet
+from .multi_modal_fusion import co_attention
 
 class RealTimeModel(torch.nn.Module):
     def __init__(self,
                  model_name,
+                 embed_dim,
                  base_model,
+                 pretrained_video_model,
+                 video_net_params,
+                 audio_net_param,
                  text_dim,
-                 img_dim,
-                 video_dim,
-                 audio_dim,
-                 num_frames,
-                 num_audioframes,
-                 num_comments,
-                 dim,
-                 num_heads,
+                 lstm_len,
                  dropout=0.3):
         super(RealTimeModel, self).__init__()
 
+        self.model_name = model_name
+        self.embed_dim = embed_dim
         self.base_model = base_model
         self.text_bert = AutoModelForSequenceClassification.from_pretrained(self.base_model).requires_grad_(False)
 
+        self.video_extractor = SwinTransformer3D(**video_net_params)
+        checkpoint = torch.load(pretrained_video_model)
+        new_state_dict = OrderedDict()
+        for k, v in checkpoint['state_dict'].items():
+            if 'backbone' in k:
+                name = k[9:]
+                new_state_dict[name] = v
+        self.video_extractor.load_state_dict(new_state_dict)
+
+        self.audio_extractor = PretrainedCLAP(**audio_net_param)
+
+        self.dropout = dropout
+        self.video_dim = video_net_params['embed_dim']
+        self.audio_dim = audio_net_param['final_feat_dim']
         self.text_dim = text_dim
-        self.img_dim = img_dim
-        self.video_dim = video_dim
-        self.audio_dim = audio_dim
-        self.num_frames = num_frames
-        self.num_audioframes = num_audioframes
-        self.num_comments = num_comments
-        self.dim = dim
-        self.num_heads = num_heads
 
-        self.video_extractor = SwinTransformer3D()
-        self.audio_extractor =
+        self.co_attention_av = co_attention(d_k=self.video_dim,
+                                            d_v=self.audio_dim,
+                                            dropout=self.dropout,)
 
+        self.co_attention_text = co_attention(d_k=self.text_dim,
+                                            d_v=self.video_dim,
+                                            dropout=self.dropout,)
+        self.lstm = nn.LSTM(input_size=self.embed_dim, hidden_size=self.embed_dim, num_layers=lstm_len)
+
+        self.decision_net = DecisionNet(input_dim=self.video_dim, hidden_dim=self.embed_dim, output_dim=self.embed_dim)
 
         self.dropout = dropout
 
-        # self.attention = Attention(dim=self.dim,heads=4,dropout=dropout)
+        self.video_bn = nn.BatchNorm1d(self.embed_dim)
+        self.text_bn = nn.BatchNorm1d(self.embed_dim)
+        self.audio_bn = nn.BatchNorm1d(self.embed_dim)
 
-
-        self.trm = nn.TransformerEncoderLayer(d_model=self.dim, nhead=2, batch_first=True)
-
-        self.linear_speech = nn.Sequential(torch.nn.Linear(self.text_dim, self.dim), torch.nn.ReLU(),
-                                           nn.Dropout(p=self.dropout))
-        self.linear_caption = nn.Sequential(torch.nn.Linear(self.text_dim, self.dim), torch.nn.ReLU(),
-                                            nn.Dropout(p=self.dropout))
-        self.linear_comment = nn.Sequential(torch.nn.Linear(self.text_dim, self.dim), torch.nn.ReLU(),
-                                            nn.Dropout(p=self.dropout))
-        # self.linear_text = nn.Sequential(torch.nn.Linear(self.text_dim, self.dim), torch.nn.ReLU(),nn.Dropout(p=self.dropout))
-        # self.linear_img = nn.Sequential(torch.nn.Linear(self.img_dim, self.dim), torch.nn.ReLU(),nn.Dropout(p=self.dropout))
-        self.linear_video = nn.Sequential(torch.nn.Linear(self.video_dim, self.dim), torch.nn.ReLU(),
-                                          nn.Dropout(p=self.dropout))
-        self.linear_audio = nn.Sequential(torch.nn.Linear(self.audio_dim, self.dim), torch.nn.ReLU(),
-                                          nn.Dropout(p=self.dropout))
-
-        self.video_bn = nn.BatchNorm1d(self.dim)
-        self.text_bn = nn.BatchNorm1d(self.dim)
-        self.audio_bn = nn.BatchNorm1d(self.dim)
-
-        self.classifier = nn.Linear(self.dim, 2)
+        self.classifier = nn.Linear(self.embed_dim, 2)
 
     def forward(self, speech_inputid, speech_mask, caption_inputid,
                 caption_mask, comments_inputid, comments_mask, c3dfea, audiofea):

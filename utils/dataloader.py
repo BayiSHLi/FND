@@ -7,6 +7,12 @@ import jieba.analyse as analyse
 import numpy as np
 import pandas as pd
 import torch
+from torchaudio import transforms as T
+import torchaudio
+import ffmpeg
+import io
+from moviepy.editor import VideoFileClip
+
 from scipy.spatial import distance
 from sklearn import preprocessing
 from sklearn.decomposition import LatentDirichletAllocation
@@ -14,7 +20,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from torch.utils.data import Dataset
 from transformers import BertTokenizer, AutoTokenizer
 from sklearn.preprocessing import MinMaxScaler
-
+from transformers import ClapProcessor
 import json
 
 def str2num(str_x):
@@ -32,13 +38,14 @@ def str2num(str_x):
 
 class FIDESDataset(Dataset):
 
-    def __init__(self, root, data_cfg):
-        self.data_root = root
-        file = data_cfg["file"]
+    def __init__(self, data_name, data_root, data_file):
+        self.data_root = data_root
+        self.data_name = data_name
+
         try:
-            self.data = pd.read_csv(root+file, encoding='unicode_escape')
+            self.data = pd.read_csv(data_root + data_file, encoding='unicode_escape')
         except:
-            print(f'file {root+file} not found.')
+            print(f'file {data_root + data_file} not found.')
 
 
         self.videopath = self.data_root + '/videos/'
@@ -110,78 +117,86 @@ class FIDESDataset(Dataset):
 
 
 class FakeTTDataset(Dataset):
-    def __init__(self, vid_path, dataset):
-        self.dataset = dataset
+    def __init__(self, data_name, data_root, data_file, sample_rate, slice_len):
+        self.data_name = data_name
+        self.data_root = data_root
+        self.sample_rate = sample_rate
+        self.slice_len = slice_len
 
-        self.data_all = pd.read_json('./fea/fakett/metainfo.json', orient='records', lines=True,
+        self.data_all = pd.read_json(data_root + data_file, orient='records', lines=True,
                                      dtype={'video_id': str})
-        self.vid = []
-        with open(vid_path, "r") as fr:
-            for line in fr.readlines():
-                self.vid.append(line.strip())
-        self.data = self.data_all[self.data_all.video_id.isin(self.vid)]
-        self.data.reset_index(inplace=True)
-        self.ocr_pattern_fea_path = './fea/fakett/preprocess_ocr/sam'
 
-        self.ocr_phrase_fea_path = './fea/fakett/preprocess_ocr/ocr_phrase_fea.pkl'
-        with open(self.ocr_phrase_fea_path, 'rb') as f:
-            self.ocr_phrase = torch.load(f)
-
-        self.text_semantic_fea_path = './fea/fakett/preprocess_text/sem_text_fea.pkl'
-        with open(self.text_semantic_fea_path, 'rb') as f:
-            self.text_semantic_fea = torch.load(f)
-
-        self.text_emo_fea_path = './fea/fakett/preprocess_text/emo_text_fea.pkl'
-        with open(self.text_emo_fea_path, 'rb') as f:
-            self.text_emo_fea = torch.load(f)
-
-        self.audio_fea_path = './fea/fakett/preprocess_audio'
-        self.visual_fea_path = './fea/fakett/preprocess_visual'
+        self.tokenizer = ClapProcessor.from_pretrained("laion/clap-htsat-unfused", sampling_rate=16000)
 
     def __len__(self):
-        return self.data.shape[0]
+        return self.data_all.shape[0]
 
     def __getitem__(self, idx):
-        item = self.data.iloc[idx]
+        item = self.data_all.iloc[idx]
         vid = item['video_id']
-        label = 1 if item['annotation'] == 'fake' else 0
-        fps = torch.tensor(item['fps'])
-        total_frame = torch.tensor(item['frame_count'])
-        visual_time_region = torch.tensor(item['transnetv2_segs'])
-        label = torch.tensor(label)
+        if item['annotation'] == 'fake':
+            label = 1
+        elif item['annotation'] == 'real':
+            label = 0
+        else:
+            label = 2
 
-        all_phrase_semantic_fea = self.text_semantic_fea['last_hidden_state'][vid]
-        all_phrase_emo_fea = self.text_emo_fea['pooler_output'][vid]
+        meta_info = (
+            f"On {item['publish_time']}, a video was published with the description '{item['description']}'. "
+            f"The user, who is {item['user_certify']}, included the following note: '{item['user_description']}'. "
+            f"The event associated with this video is: {item['event']}."
+        )
 
-        v_fea_path = os.path.join(self.visual_fea_path, vid + '.pkl')
-        raw_visual_frames = torch.tensor(torch.load(open(v_fea_path, 'rb')))
+        inputs = self.tokenizer.tokenizer(text=meta_info, return_tensors="pt",
+                                          padding="max_length", max_length=64)
+        text_inputs = inputs['input_ids']
+        attn_masks = inputs['attention_mask']
 
-        a_fea_path = os.path.join(self.audio_fea_path, vid + '.pkl')
-        raw_audio_emo = torch.load(open(a_fea_path, 'rb'))  # 1*768
+        video_file = os.path.join(self.data_root, 'videos', vid + '.mp4')
+        keyframes, video_len = self.extract_keyframes()
 
-        ocr_pattern_fea_file_path = os.path.join(self.ocr_pattern_fea_path, vid, 'r0.pkl')
-        ocr_pattern_fea = torch.tensor(torch.load(open(ocr_pattern_fea_file_path, 'rb')))
+        wav_file = os.path.join(self.data_root, 'audios', vid + '.wav')
+        wav_data, sr = torchaudio.load(wav_file)
+        if sr != self.sample_rate:
+            resample = T.Resample(sr, self.sample_rate)
+            wav_data = resample(wav_data)
 
-        ocr_phrase_fea = self.ocr_phrase['ocr_phrase_fea'][vid]
-        ocr_time_region = self.ocr_phrase['ocr_time_region'][vid]
+        inputs = self.tokenizer(audios=audio_image, return_tensors="pt", sampling_rate=self.sample_rate)
+        audio_inputs = inputs["input_features"]
+        audio_chunk = self.slice_audio(start, end, wav_data)
 
-        v_fea_path = os.path.join(self.visual_fea_path, vid + '.pkl')
-        raw_visual_frames = torch.tensor(torch.load(open(v_fea_path, 'rb')))
+    def extract_keyframes(self, video_path):
 
-        return {
-            'vid': vid,
-            'label': label,
-            'fps': fps,
-            'total_frame': total_frame,
-            'all_phrase_semantic_fea': all_phrase_semantic_fea,
-            'all_phrase_emo_fea': all_phrase_emo_fea,
-            'raw_visual_frames': raw_visual_frames,
-            'raw_audio_emo': raw_audio_emo,
-            'ocr_pattern_fea': ocr_pattern_fea,
-            'ocr_phrase_fea': ocr_phrase_fea,
-            'ocr_time_region': ocr_time_region,
-            'visual_time_region': visual_time_region
-        }
+        process = (
+            ffmpeg
+            .input(video_path)
+            .output('pipe:', vf='select=eq(pict_type\\,I)', vsync='vfr', format='image2pipe', vcodec='mjpeg')
+            .run_async(pipe_stdout=True)
+        )
+
+        keyframes = []
+        while True:
+            # 从管道中读取图像数据
+            in_bytes = process.stdout.read(1024 * 1024)  # 读取数据块
+            if not in_bytes:
+                break
+            # 将字节流转换为图像对象
+            image = Image.open(io.BytesIO(in_bytes))
+            keyframes.append(image)
+
+        process.wait()  # 等待进程结束
+        return keyframes
+
+    def slice_audio(self, start, end, wav_data):
+        """
+        SCL paper..
+        sample_rate denotes how many sample points for one second
+        """
+        max_ind = wav_data.shape[1]
+        start_ind = min(int(start * self.sample_rate), max_ind)
+        end_ind = min(int(end * self.sample_rate), max_ind)
+
+        return wav_data[:, start_ind: end_ind]
 
 def split_word(df):
     title = df['description'].values

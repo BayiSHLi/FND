@@ -2,11 +2,12 @@ import copy
 import os
 import time
 from tqdm import tqdm
+import torch
+import torch.nn as nn
 
 from sklearn.model_selection import KFold
 from torch.utils.data import DataLoader, Subset
 from torchinfo import summary
-import torch.nn as nn
 from utils.metrics import *
 import wandb
 
@@ -17,8 +18,6 @@ class Trainer():
                  model_cfg,
                  train_set,
                  test_set,
-                 mode,
-                 exp_name,
                  batch_size,
                  num_workers,
                  save_param_path,
@@ -39,16 +38,12 @@ class Trainer():
         self.train_set = train_set
         self.test_set = test_set
 
-        self.mode = mode
-
         self.num_workers = num_workers
-        if not os.path.exists(save_param_path):
-            os.makedirs(save_param_path)
+
         self.save_param_path = save_param_path
         self.start_epoch = start_epoch
         self.save_threshold = save_threshold
         self.repeat = repeat
-        self.exp_name = exp_name
 
         self.batch_size = batch_size
 
@@ -165,11 +160,11 @@ class Trainer():
         print('TRAIN')
         print('-' * 10)
 
-        for fold, (train_idx, val_idx) in enumerate(self.kf.split(self.dataset['train'])):
+        for fold, (train_idx, val_idx) in enumerate(self.kf.split(self.train_set)):
             print(f'Fold {fold + 1}/{self.num_folds}')
 
-            train_subset = Subset(self.dataset['train'], train_idx)
-            val_subset = Subset(self.dataset['train'], val_idx)
+            train_subset = Subset(self.train_set, train_idx)
+            val_subset = Subset(self.train_set, val_idx)
 
             train_dataloader = DataLoader(train_subset, batch_size=self.batch_size,
                                           num_workers=self.num_workers,
@@ -328,7 +323,7 @@ class Trainer():
 
 
     def test(self):
-        test_dataloader = DataLoader(self.dataset['test'], batch_size=self.batch_size,
+        test_dataloader = DataLoader(self.test_set, batch_size=self.batch_size,
                                      num_workers=self.num_workers,
                                      pin_memory=True,
                                      shuffle=False,
@@ -342,7 +337,6 @@ class Trainer():
         self.model.cuda()
         self.model.eval()
 
-        print(self.exp_name)
         for name in self.results.keys():
             # print(self.results[name])
             pred = []
