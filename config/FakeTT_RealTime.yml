@@ -1,0 +1,36 @@
+dataset:
+  data_name: 'FakeTT'
+  data_root: '/dataset/FakeTT/'
+  data_file: 'data.json'
+
+model:
+  model_name: 'RealTime'
+  base_model: 'digitalepidemiologylab/covid-twitter-bert-v2'
+  pretrained_video_model: './pretrained/swin_base_patch244_window1677_sthv2.pth'
+  video_net_params:
+    embed_dim: 128
+    depths: [2, 2, 18, 2]
+    num_heads: [4, 8, 16, 32]
+    patch_size: (2,4,4)
+    window_size: (16,7,7)
+    drop_path_rate: 0.4
+    patch_norm: True
+  audio_net_param:
+    pretrained_name: 'laion/clap-htsat-unfused'
+    final_feat_dim: 64
+
+exp:
+  epochs: 200
+  epoch_stop: 30
+  batch_size: 16
+  num_workers: 8
+  seed: 3407
+  gpu: 0
+  lr: 1e-4
+  dropout: 0.3
+  weight_decay: 1e-3
+  path_tensorboard: './tb/'
+  shielding_prob: 0.3
+  average_weight: True
+  random_repeat: 3
+  baseline: False
