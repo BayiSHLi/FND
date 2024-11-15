@@ -47,7 +47,7 @@ The training, validating and testing dataset are both subset from each dataset.
 FIDES is our newly constructed English dataset for a comprehensive evaluation in English-speaking contexts.
 
 FakeTT is a large English dataset for fake news detection on short video platforms. 
-For the details, please refer to [FakeTT]: https://github.com/ICTMCG/FakingRecipe/tree/main
+For the details, please refer to [FakeTT](https://github.com/ICTMCG/FakingRecipe/tree/main)
 
 Arrange the dataset folder as follows:
 
@@ -86,7 +86,7 @@ FakeTT
 ## Training
 
 Before training, please download the datasets and complete environment configuration, please download the pretrained
-video swin transformer from [Video-Swin-Transformer]: https://github.com/SwinTransformer/storage/releases/download/v1.0.4/swin_base_patch244_window1677_sthv2.pth
+video swin transformer from [Video-Swin-Transformer](https://github.com/SwinTransformer/storage/releases/download/v1.0.4/swin_base_patch244_window1677_sthv2.pth)
 ```
  wget https://github.com/SwinTransformer/storage/releases/download/v1.0.4/swin_base_patch244_window1677_sthv2.pth
 ```
